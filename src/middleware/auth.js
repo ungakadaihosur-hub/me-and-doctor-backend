@@ -1,5 +1,20 @@
-const { requireSession } = require('@me-and/auth-core');
+const authCore = require('@me-and/auth-core');
 const { scopedClient } = require('../db');
+
+if (typeof authCore.requireSession !== 'function') {
+  // withClinicAuth would silently end up undefined and Express would
+  // fail with a generic "Router.use() requires a middleware function"
+  // in whichever route file happens to import this first — this check
+  // turns that into a message that actually names the real problem.
+  throw new Error(
+    'requireSession is not a function — @me-and/auth-core did not load ' +
+    'correctly. Check Railway\'s BUILD log (not the runtime/deploy log) ' +
+    'for confirmation that "packages/auth-core" was installed, and make ' +
+    'sure that folder is actually committed to your repo (not gitignored).'
+  );
+}
+
+const { requireSession } = authCore;
 
 /**
  * Wraps auth-core's requireSession and additionally attaches
@@ -12,3 +27,5 @@ function withClinicAuth(req, res, next) {
     next();
   });
 }
+
+module.exports = { withClinicAuth };
