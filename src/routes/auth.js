@@ -1,76 +1,32 @@
 const express = require('express');
-const { sendOtp, verifyOtp, createSession } = require('@me-and/auth-core');
-const { adminClient } = require('../db');
+const { withClinicAuth } = require('../middleware/auth');
 
 const router = express.Router();
+router.use(withClinicAuth);
 
-/**
- * Per-product claims resolver for auth-core.
- * Single role for MVP: 'doctor'. No branching logic needed.
- */
-async function resolveClaims(phone) {
-  const { data: doctor, error } = await adminClient
-    .from('doctors')
-    .select('id, clinic_id')
-    .eq('phone', phone)
+router.get('/', async (req, res) => {
+  const { data, error } = await req.supabase
+    .from('clinics')
+    .select('*')
+    .eq('id', req.clinicId)
     .maybeSingle();
 
-  if (error || !doctor) return null;
-
-  return {
-    id: doctor.id,
-    clinic_id: doctor.clinic_id,
-    role: 'doctor',
-  };
-}
-
-router.post('/send-otp', async (req, res) => {
-  const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: 'phone_required' });
-
-  try {
-    const result = await sendOtp(phone);
-    res.json(result);
-  } catch (err) {
-    console.error('send-otp failed:', err.message);
-    res.status(502).json({ error: 'otp_send_failed' });
-  }
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
-router.post('/verify-otp', async (req, res) => {
-  const { phone, otp } = req.body;
-  if (!phone || !otp) return res.status(400).json({ error: 'phone_and_otp_required' });
+router.patch('/', async (req, res) => {
+  const { doctor_name, qualification, clinic_name, clinic_address, phone } = req.body;
 
-  try {
-    const { verified } = await verifyOtp(phone, otp);
-    if (!verified) return res.status(401).json({ error: 'invalid_otp' });
+  const { data, error } = await req.supabase
+    .from('clinics')
+    .update({ doctor_name, qualification, clinic_name, clinic_address, phone })
+    .eq('id', req.clinicId)
+    .select()
+    .maybeSingle();
 
-    const session = await createSession(phone, resolveClaims);
-    if (!session) return res.status(404).json({ error: 'no_clinic_for_phone' });
-
-    res.json({ token: session.token, claims: session.claims });
-  } catch (err) {
-    console.error('verify-otp failed:', err.message);
-    res.status(502).json({ error: 'otp_verify_failed' });
-  }
-});
-
-/**
- * Dev-only OTP bypass, double-gated, never active in production.
- * Mirrors the same pattern used in Me & Coach's backend.
- */
-router.post('/dev-login', async (req, res) => {
-  if (process.env.NODE_ENV === 'production' || process.env.DEV_LOGIN_ENABLED !== 'true') {
-    return res.status(404).json({ error: 'not_found' });
-  }
-
-  const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: 'phone_required' });
-
-  const session = await createSession(phone, resolveClaims);
-  if (!session) return res.status(404).json({ error: 'no_clinic_for_phone' });
-
-  res.json({ token: session.token, claims: session.claims });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
 module.exports = router;
