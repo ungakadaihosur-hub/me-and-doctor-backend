@@ -12,5 +12,3 @@ function withClinicAuth(req, res, next) {
     next();
   });
 }
-
-module.exports = { withClinicAuth };
