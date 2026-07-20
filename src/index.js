@@ -1,75 +1,38 @@
-const axios = require('axios');
-const jwt = require('jsonwebtoken');
+require('dotenv/config');
+const express = require('express');
+const cors = require('cors');
 
-const MSG91_BASE = 'https://control.msg91.com/api/v5';
+const authRoutes = require('./routes/auth.js');
+const clinicRoutes = require('./routes/clinic.js');
+const patientsRoutes = require('./routes/patients.js');
+const visitsRoutes = require('./routes/visits.js');
+const prescriptionsRoutes = require('./routes/prescriptions.js');
+const queueRoutes = require('./routes/queue.js');
+const billingRoutes = require('./routes/billing.js');
+const remindersRoutes = require('./routes/reminders.js');
+const webhooksRoutes = require('./routes/webhooks.js');
 
-/**
- * Send OTP to a phone number via MSG91.
- */
-async function sendOtp(phone) {
-  const res = await axios.post(
-    `${MSG91_BASE}/otp`,
-    { mobile: phone, template_id: process.env.MSG91_TEMPLATE_ID },
-    { headers: { authkey: process.env.MSG91_AUTH_KEY } }
-  );
-  return { success: true, requestId: res.data?.request_id || null };
-}
+const app = express();
 
-/**
- * Verify OTP with MSG91.
- */
-async function verifyOtp(phone, otp) {
-  const res = await axios.get(`${MSG91_BASE}/otp/verify`, {
-    params: { mobile: phone, otp },
-    headers: { authkey: process.env.MSG91_AUTH_KEY },
-  });
-  const ok = res.data?.type === 'success';
-  return { verified: ok, raw: res.data };
-}
+app.use(cors());
+app.use(express.json());
 
-/**
- * Mint a Supabase-compatible session JWT.
- * `resolveClaims(phone)` is supplied per-product and returns the
- * product-specific claims object (e.g. { clinic_id, role: 'doctor' }).
- */
-async function createSession(phone, resolveClaims) {
-  const claims = await resolveClaims(phone);
-  if (!claims) return null;
+app.get('/health', (_req, res) => res.json({ ok: true }));
 
-  const payload = {
-    sub: claims.id || phone,
-    phone,
-    role: 'authenticated',
-    ...claims,
-  };
+app.use('/api/auth', authRoutes);
+app.use('/api/clinic', clinicRoutes);
+app.use('/api/patients', patientsRoutes);
+app.use('/api/visits', visitsRoutes);
+app.use('/api/prescriptions', prescriptionsRoutes);
+app.use('/api/queue', queueRoutes);
+app.use('/api/billing', billingRoutes);
+app.use('/api/reminders', remindersRoutes);
+app.use('/api/webhooks', webhooksRoutes);
 
-  const token = jwt.sign(payload, process.env.SUPABASE_JWT_SECRET, {
-    expiresIn: '30d',
-  });
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(500).json({ error: 'Internal server error' });
+});
 
-  return { token, claims };
-}
-
-/**
- * Express middleware: verifies the bearer token and attaches
- * `req.claims` for downstream RLS-scoped Supabase calls.
- */
-function requireSession(req, res, next) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-
-  if (!token) {
-    return res.status(401).json({ error: 'missing_token' });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.SUPABASE_JWT_SECRET);
-    req.claims = decoded;
-    req.userToken = token;
-    next();
-  } catch (err) {
-    return res.status(401).json({ error: 'invalid_token' });
-  }
-}
-
-module.exports = { sendOtp, verifyOtp, createSession, requireSession };
+const port = process.env.PORT || 8080;
+app.listen(port, () => console.log(`Me & Doctor API listening on :${port}`));
