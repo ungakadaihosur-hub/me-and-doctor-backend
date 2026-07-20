@@ -9,25 +9,6 @@ const router = express.Router();
  * phone number and returns the claims embedded in the session JWT.
  * Single-user-per-clinic for MVP, so phone is the account key.
  */
-async function resolveClaims(phone) {
-  const { data: existing, error: findErr } = await adminClient
-    .from('clinics')
-    .select('id')
-    .eq('phone', phone)
-    .maybeSingle();
-
-  if (findErr) throw findErr;
-  if (existing) return { clinic_id: existing.id };
-
-  const { data: created, error: createErr } = await adminClient
-    .from('clinics')
-    .insert({ phone })
-    .select('id')
-    .single();
-
-  if (createErr) throw createErr;
-  return { clinic_id: created.id };
-}
 
 router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
@@ -39,7 +20,32 @@ router.post('/send-otp', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+async function resolveClaims(phone) {
+  const { data: existingDoctor, error: findErr } = await adminClient
+    .from('doctors')
+    .select('clinic_id')
+    .eq('phone', phone)
+    .maybeSingle();
 
+  if (findErr) throw findErr;
+  if (existingDoctor) return { clinic_id: existingDoctor.clinic_id };
+
+  const { data: newClinic, error: clinicErr } = await adminClient
+    .from('clinics')
+    .insert({ doctor_name: '', clinic_name: '', phone })
+    .select('id')
+    .single();
+
+  if (clinicErr) throw clinicErr;
+
+  const { error: doctorErr } = await adminClient
+    .from('doctors')
+    .insert({ phone, clinic_id: newClinic.id });
+
+  if (doctorErr) throw doctorErr;
+
+  return { clinic_id: newClinic.id };
+}
 router.post('/verify-otp', async (req, res) => {
   const { phone, otp } = req.body;
   if (!phone || !otp) return res.status(400).json({ error: 'phone and otp required' });
