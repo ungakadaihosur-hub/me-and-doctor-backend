@@ -7,7 +7,7 @@ const router = express.Router();
 router.use(withClinicAuth);
 
 router.post('/', async (req, res) => {
-  const { patient_id, visit_id, medicines } = req.body;
+  const { patient_id, visit_id, medicines, advice } = req.body;
   if (!patient_id || !Array.isArray(medicines)) {
     return res.status(400).json({ error: 'patient_id_and_medicines_required' });
   }
@@ -19,6 +19,7 @@ router.post('/', async (req, res) => {
       patient_id,
       visit_id: visit_id || null,
       medicines,
+      advice: advice || null,
     })
     .select()
     .single();
@@ -45,11 +46,12 @@ router.get('/last', async (req, res) => {
   res.json(data);
 });
 
-// Generates a simple PDF prescription and returns it as a stream
+// Generates a PDF prescription — uses the clinic's custom
+// prescription_header/registration_number when set in Clinic Settings.
 router.get('/:id/pdf', async (req, res) => {
   const { data: rx, error } = await req.supabase
     .from('prescriptions')
-    .select('*, patients(name, age, gender), clinics(clinic_name, doctor_name, qualification, clinic_address)')
+    .select('*, patients(name, age, gender), clinics(clinic_name, doctor_name, qualification, clinic_address, registration_number, prescription_header)')
     .eq('id', req.params.id)
     .maybeSingle();
 
@@ -61,8 +63,15 @@ router.get('/:id/pdf', async (req, res) => {
   const doc = new PDFDocument({ margin: 40 });
   doc.pipe(res);
 
+  if (rx.clinics.prescription_header) {
+    doc.fontSize(14).text(rx.clinics.prescription_header, { align: 'center' });
+    doc.moveDown(0.3);
+  }
   doc.fontSize(16).text(rx.clinics.clinic_name, { align: 'center' });
   doc.fontSize(10).text(`${rx.clinics.doctor_name} — ${rx.clinics.qualification}`, { align: 'center' });
+  if (rx.clinics.registration_number) {
+    doc.text(`Reg. No: ${rx.clinics.registration_number}`, { align: 'center' });
+  }
   doc.text(rx.clinics.clinic_address, { align: 'center' });
   doc.moveDown();
   doc.fontSize(12).text(`Patient: ${rx.patients.name}  (${rx.patients.age || '-'} / ${rx.patients.gender || '-'})`);
@@ -73,10 +82,18 @@ router.get('/:id/pdf', async (req, res) => {
     doc.text(`${i + 1}. ${m.name} — ${m.dosage || ''} — ${m.frequency || ''} — ${m.duration || ''}`);
   });
 
+  if (rx.advice) {
+    doc.moveDown();
+    doc.fontSize(11).text(`Advice: ${rx.advice}`);
+  }
+
   doc.end();
 });
 
-// Shares the prescription PDF link over WhatsApp via Wati
+// Shares the prescription PDF link over WhatsApp via Wati.
+// Ready for future use once a Wati template is approved — the call
+// itself is fully wired and will start working the moment
+// WATI_BASE_URL / WATI_API_KEY / the 'prescription_share' template exist.
 router.post('/:id/share', async (req, res) => {
   const { data: rx, error } = await req.supabase
     .from('prescriptions')
