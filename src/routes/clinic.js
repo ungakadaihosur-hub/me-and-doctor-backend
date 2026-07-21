@@ -4,6 +4,18 @@ const { withClinicAuth } = require('../middleware/auth');
 const router = express.Router();
 router.use(withClinicAuth);
 
+const CLINIC_FIELDS = [
+  'doctor_name', 'qualification', 'clinic_name', 'clinic_address', 'phone',
+  'registration_number', 'consultation_fee', 'clinic_timings', 'logo_url', 'prescription_header',
+];
+
+function pick(body, fields) {
+  return fields.reduce((acc, f) => {
+    if (body[f] !== undefined) acc[f] = body[f];
+    return acc;
+  }, {});
+}
+
 router.get('/', async (req, res) => {
   const { data, error } = await req.supabase
     .from('clinics')
@@ -16,11 +28,11 @@ router.get('/', async (req, res) => {
 });
 
 router.patch('/', async (req, res) => {
-  const { doctor_name, qualification, clinic_name, clinic_address, phone } = req.body;
+  const fields = pick(req.body, CLINIC_FIELDS);
 
   const { data, error } = await req.supabase
     .from('clinics')
-    .update({ doctor_name, qualification, clinic_name, clinic_address, phone })
+    .update(fields)
     .eq('id', req.clinicId)
     .select()
     .maybeSingle();
