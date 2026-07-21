@@ -57,7 +57,7 @@ router.post('/token', async (req, res) => {
 
 router.patch('/token/:id', async (req, res) => {
   const { status } = req.body;
-  if (!['waiting', 'in_consultation', 'done'].includes(status)) {
+  if (!['waiting', 'in_consultation', 'completed', 'cancelled'].includes(status)) {
     return res.status(400).json({ error: 'invalid_status' });
   }
 
