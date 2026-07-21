@@ -1,85 +1,76 @@
 const express = require('express');
-const authCore = require('@me-and/auth-core');
+const { sendOtp, verifyOtp, createSession } = require('@me-and/auth-core');
 const { adminClient } = require('../db');
 
 const router = express.Router();
 
 /**
- * Looks up (or creates, on first login) the clinic row for this
- * phone number and returns the claims embedded in the session JWT.
- * Single-user-per-clinic for MVP, so phone is the account key.
+ * Per-product claims resolver for auth-core.
+ * Single role for MVP: 'doctor'. No branching logic needed.
  */
-
-router.post('/send-otp', async (req, res) => {
-  const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: 'phone required' });
-  try {
-    await authCore.sendOtp(phone);
-    res.json({ sent: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 async function resolveClaims(phone) {
-  const { data: existingDoctor, error: findErr } = await adminClient
+  const { data: doctor, error } = await adminClient
     .from('doctors')
-    .select('clinic_id')
+    .select('id, clinic_id')
     .eq('phone', phone)
     .maybeSingle();
 
-  if (findErr) throw findErr;
-  if (existingDoctor) return { clinic_id: existingDoctor.clinic_id };
+  if (error || !doctor) return null;
 
-  const { data: newClinic, error: clinicErr } = await adminClient
-    .from('clinics')
-    .insert({ doctor_name: '', clinic_name: '', phone })
-    .select('id')
-    .single();
-
-  if (clinicErr) throw clinicErr;
-
-  const { error: doctorErr } = await adminClient
-    .from('doctors')
-    .insert({ phone, clinic_id: newClinic.id });
-
-  if (doctorErr) throw doctorErr;
-
-  return { clinic_id: newClinic.id };
+  return {
+    id: doctor.id,
+    clinic_id: doctor.clinic_id,
+    role: 'doctor',
+  };
 }
+
+router.post('/send-otp', async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone_required' });
+
+  try {
+    const result = await sendOtp(phone);
+    res.json(result);
+  } catch (err) {
+    console.error('send-otp failed:', err.message);
+    res.status(502).json({ error: 'otp_send_failed' });
+  }
+});
+
 router.post('/verify-otp', async (req, res) => {
   const { phone, otp } = req.body;
-  if (!phone || !otp) return res.status(400).json({ error: 'phone and otp required' });
+  if (!phone || !otp) return res.status(400).json({ error: 'phone_and_otp_required' });
+
   try {
-    const { verified } = await authCore.verifyOtp(phone, otp);
+    const { verified } = await verifyOtp(phone, otp);
     if (!verified) return res.status(401).json({ error: 'invalid_otp' });
 
-    const session = await authCore.createSession(phone, resolveClaims);
-    if (!session) return res.status(500).json({ error: 'session_failed' });
+    const session = await createSession(phone, resolveClaims);
+    if (!session) return res.status(404).json({ error: 'no_clinic_for_phone' });
 
     res.json({ token: session.token, claims: session.claims });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('verify-otp failed:', err.message);
+    res.status(502).json({ error: 'otp_verify_failed' });
   }
 });
 
 /**
- * Dev-only bypass so pilot testing isn't blocked on MSG91 setup.
- * Flip DEV_LOGIN_ENABLED to false (or remove it) in Railway before
- * real pilot launch — 404s in any other configuration.
+ * Dev-only OTP bypass, double-gated, never active in production.
+ * Mirrors the same pattern used in Me & Coach's backend.
  */
 router.post('/dev-login', async (req, res) => {
-  if (process.env.DEV_LOGIN_ENABLED !== 'true') {
-    return res.status(404).end();
+  if (process.env.NODE_ENV === 'production' || process.env.DEV_LOGIN_ENABLED !== 'true') {
+    return res.status(404).json({ error: 'not_found' });
   }
+
   const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: 'phone required' });
-  try {
-    const session = await authCore.createSession(phone, resolveClaims);
-    if (!session) return res.status(500).json({ error: 'session_failed' });
-    res.json({ token: session.token, claims: session.claims });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  if (!phone) return res.status(400).json({ error: 'phone_required' });
+
+  const session = await createSession(phone, resolveClaims);
+  if (!session) return res.status(404).json({ error: 'no_clinic_for_phone' });
+
+  res.json({ token: session.token, claims: session.claims });
 });
 
 module.exports = router;
