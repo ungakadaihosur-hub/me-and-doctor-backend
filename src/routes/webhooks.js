@@ -26,7 +26,7 @@ router.post('/razorpay', async (req, res) => {
     if (visitBillingId) {
       const { error } = await adminClient
         .from('visit_billing')
-        .update({ payment_mode: 'razorpay' })
+        .update({ payment_mode: 'razorpay', payment_status: 'paid' })
         .eq('id', visitBillingId);
 
       if (error) console.error('failed to mark billing paid:', error.message);
