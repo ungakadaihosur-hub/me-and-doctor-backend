@@ -5,10 +5,30 @@ const { adminClient } = require('../db');
 const router = express.Router();
 
 /**
+ * The app's own phone fields (doctors, patients) only ever collect a
+ * bare 10-digit number — there's no country-code input anywhere in the
+ * UI. MSG91, however, returns the verified identifier WITH the country
+ * code (e.g. "919xxxxxxxxx"), since that's what's needed to actually
+ * route the SMS. Without stripping it back down here, every widget
+ * login would fail to match any existing doctor row and 404 as
+ * "no_clinic_for_phone" — which looks like a wrong-OTP error from the
+ * frontend, even though the OTP itself was correct.
+ */
+function normalizePhone(phone) {
+  if (!phone) return phone;
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return digits.slice(2);
+  }
+  return digits;
+}
+
+/**
  * Per-product claims resolver for auth-core.
  * Single role for MVP: 'doctor'. No branching logic needed.
  */
-async function resolveClaims(phone) {
+async function resolveClaims(rawPhone) {
+  const phone = normalizePhone(rawPhone);
   const { data: doctor, error } = await adminClient
     .from('doctors')
     .select('id, clinic_id')
@@ -80,11 +100,24 @@ router.post('/verify-widget-token', async (req, res) => {
 });
 
 /**
- * Dev-only OTP bypass, double-gated, never active in production.
- * Mirrors the same pattern used in Me & Coach's backend.
+ * Dev-only OTP bypass. Triple-gated, never active in production:
+ *   1. NODE_ENV must not be 'production'
+ *   2. DEV_LOGIN_ENABLED must be exactly 'true'
+ *   3. Caller must send the matching DEV_LOGIN_SECRET header
+ * Any single one of these being correctly set (e.g. NODE_ENV=production
+ * on Railway) is enough to kill this route — but since #1 and #2 depend
+ * on env vars that are easy to leave misconfigured, #3 is the real
+ * backstop: DEV_LOGIN_SECRET is unset by default, so this route 404s
+ * out of the box even if the other two are wrong.
  */
 router.post('/dev-login', async (req, res) => {
-  if (process.env.NODE_ENV === 'production' || process.env.DEV_LOGIN_ENABLED !== 'true') {
+  const isProd = process.env.NODE_ENV === 'production';
+  const enabled = process.env.DEV_LOGIN_ENABLED === 'true';
+  const configuredSecret = process.env.DEV_LOGIN_SECRET;
+  const suppliedSecret = req.headers['x-dev-login-secret'];
+  const secretMatches = !!configuredSecret && suppliedSecret === configuredSecret;
+
+  if (isProd || !enabled || !secretMatches) {
     return res.status(404).json({ error: 'not_found' });
   }
 
