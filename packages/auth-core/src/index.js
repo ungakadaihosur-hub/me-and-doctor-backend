@@ -16,7 +16,7 @@ async function sendOtp(phone) {
 }
 
 /**
- * Verify OTP with MSG91.
+ * Verify OTP with MSG91 (legacy direct API — kept for backward compatibility).
  */
 async function verifyOtp(phone, otp) {
   const res = await axios.get(`${MSG91_BASE}/otp/verify`, {
@@ -25,6 +25,28 @@ async function verifyOtp(phone, otp) {
   });
   const ok = res.data?.type === 'success';
   return { verified: ok, raw: res.data };
+}
+
+/**
+ * Verifies the access-token returned by MSG91's client-side OTP Widget
+ * (verify.msg91.com/otp-provider.js). This server-side check is mandatory —
+ * the widget's success callback on the frontend is not enough on its own,
+ * since a client-side value can be spoofed. Only after this call confirms
+ * the token is genuine should a session be minted.
+ */
+async function verifyWidgetToken(accessToken) {
+  const res = await axios.post(`${MSG91_BASE}/widget/verifyAccessToken`, {
+    authkey: process.env.MSG91_AUTH_KEY,
+    'access-token': accessToken,
+  });
+
+  const ok = res.data?.type === 'success';
+  // MSG91 returns the verified identifier (mobile number) in `message`
+  // on success — confirm this matches what you see in your own testing,
+  // since MSG91 has changed response shapes across widget versions before.
+  const phone = ok ? res.data.message : null;
+
+  return { verified: ok, phone, raw: res.data };
 }
 
 /**
@@ -72,4 +94,4 @@ function requireSession(req, res, next) {
   }
 }
 
-module.exports = { sendOtp, verifyOtp, createSession, requireSession };
+module.exports = { sendOtp, verifyOtp, verifyWidgetToken, createSession, requireSession };
