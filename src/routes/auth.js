@@ -1,5 +1,5 @@
 const express = require('express');
-const { sendOtp, verifyOtp, createSession } = require('@me-and/auth-core');
+const { sendOtp, verifyOtp, verifyWidgetToken, createSession } = require('@me-and/auth-core');
 const { adminClient } = require('../db');
 
 const router = express.Router();
@@ -52,6 +52,30 @@ router.post('/verify-otp', async (req, res) => {
   } catch (err) {
     console.error('verify-otp failed:', err.message);
     res.status(502).json({ error: 'otp_verify_failed' });
+  }
+});
+
+/**
+ * Client-side MSG91 OTP Widget flow: the frontend talks to MSG91 directly
+ * to send/verify the OTP and gets back an access-token. That token is
+ * sent here, re-verified server-side (mandatory — never trust the
+ * client's word alone), and only then is a session minted.
+ */
+router.post('/verify-widget-token', async (req, res) => {
+  const { accessToken } = req.body;
+  if (!accessToken) return res.status(400).json({ error: 'access_token_required' });
+
+  try {
+    const { verified, phone } = await verifyWidgetToken(accessToken);
+    if (!verified || !phone) return res.status(401).json({ error: 'invalid_widget_token' });
+
+    const session = await createSession(phone, resolveClaims);
+    if (!session) return res.status(404).json({ error: 'no_clinic_for_phone' });
+
+    res.json({ token: session.token, claims: session.claims });
+  } catch (err) {
+    console.error('verify-widget-token failed:', err.message);
+    res.status(502).json({ error: 'widget_token_verify_failed' });
   }
 });
 
