@@ -1,4 +1,5 @@
 const express = require('express');
+const PDFDocument = require('pdfkit');
 const { withClinicAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -19,12 +20,20 @@ router.post('/', async (req, res) => {
     ? Number(consultation_fee) + Number(other_charges || 0) - Number(discount || 0)
     : amount;
 
-  if (total == null) return res.status(400).json({ error: 'amount_or_consultation_fee_required' });
+  if (total == null || Number.isNaN(Number(total))) {
+    return res.status(400).json({ error: 'amount_or_consultation_fee_required' });
+  }
+  if (Number(total) < 0) {
+    return res.status(400).json({ error: 'total_cannot_be_negative' });
+  }
 
-  const { count } = await req.supabase
-    .from('visit_billing')
-    .select('*', { count: 'exact', head: true })
-    .eq('clinic_id', req.clinicId);
+  // Race-condition fix: same atomic-counter pattern as queue tokens,
+  // but a lifetime counter (next_clinic_counter) rather than a daily
+  // one, since invoice numbers shouldn't reset each day.
+  const { data: invoiceNumber, error: counterError } = await req.supabase
+    .rpc('next_clinic_counter', { p_clinic_id: req.clinicId, p_counter_type: 'invoice' });
+
+  if (counterError) return res.status(500).json({ error: counterError.message });
 
   const { data, error } = await req.supabase
     .from('visit_billing')
@@ -38,7 +47,7 @@ router.post('/', async (req, res) => {
       payment_mode,
       upi_qr_ref,
       payment_status: payment_status || (payment_mode === 'razorpay' ? 'pending' : 'paid'),
-      invoice_number: (count || 0) + 1,
+      invoice_number: invoiceNumber,
     })
     .select()
     .single();
@@ -49,6 +58,9 @@ router.post('/', async (req, res) => {
 
 router.patch('/:id', async (req, res) => {
   const { payment_status, payment_mode } = req.body;
+  if (payment_status && !['pending', 'paid'].includes(payment_status)) {
+    return res.status(400).json({ error: 'invalid_payment_status' });
+  }
 
   const { data, error } = await req.supabase
     .from('visit_billing')
@@ -59,6 +71,7 @@ router.patch('/:id', async (req, res) => {
     .maybeSingle();
 
   if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'not_found' });
   res.json(data);
 });
 
@@ -84,6 +97,54 @@ router.get('/summary', async (req, res) => {
 
   const total = data.reduce((sum, row) => sum + Number(row.amount), 0);
   res.json({ range, total, count: data.length, rows: data });
+});
+
+// Printable invoice PDF — was previously missing (only prescriptions
+// had a PDF route). Mirrors the prescriptions.js PDF pattern.
+router.get('/:id/pdf', async (req, res) => {
+  const { data: bill, error } = await req.supabase
+    .from('visit_billing')
+    .select('*, visits(visit_date, patients(name, age, gender)), clinics(clinic_name, doctor_name, qualification, clinic_address, registration_number)')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (error || !bill) return res.status(404).json({ error: 'not_found' });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename=invoice-${bill.invoice_number || bill.id}.pdf`);
+
+  const doc = new PDFDocument({ margin: 40 });
+  doc.pipe(res);
+
+  doc.fontSize(16).text(bill.clinics.clinic_name, { align: 'center' });
+  doc.fontSize(10).text(`${bill.clinics.doctor_name} — ${bill.clinics.qualification || ''}`, { align: 'center' });
+  if (bill.clinics.registration_number) {
+    doc.text(`Reg. No: ${bill.clinics.registration_number}`, { align: 'center' });
+  }
+  doc.text(bill.clinics.clinic_address || '', { align: 'center' });
+  doc.moveDown();
+
+  doc.fontSize(14).text(`Invoice #${bill.invoice_number || '-'}`, { align: 'right' });
+  doc.fontSize(10).text(`Date: ${new Date(bill.created_at).toLocaleDateString()}`, { align: 'right' });
+  doc.moveDown();
+
+  if (bill.visits?.patients) {
+    doc.fontSize(12).text(`Patient: ${bill.visits.patients.name}  (${bill.visits.patients.age || '-'} / ${bill.visits.patients.gender || '-'})`);
+    doc.moveDown();
+  }
+
+  if (bill.consultation_fee != null) {
+    doc.fontSize(11).text(`Consultation Fee: ₹${Number(bill.consultation_fee).toFixed(2)}`);
+    doc.text(`Other Charges: ₹${Number(bill.other_charges || 0).toFixed(2)}`);
+    doc.text(`Discount: -₹${Number(bill.discount || 0).toFixed(2)}`);
+    doc.moveDown(0.5);
+  }
+
+  doc.fontSize(13).text(`Total: ₹${Number(bill.amount).toFixed(2)}`, { underline: true });
+  doc.fontSize(10).text(`Payment Mode: ${bill.payment_mode || '-'}`);
+  doc.text(`Payment Status: ${bill.payment_status}`);
+
+  doc.end();
 });
 
 module.exports = router;
