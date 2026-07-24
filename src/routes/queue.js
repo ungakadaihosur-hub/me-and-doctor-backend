@@ -29,23 +29,22 @@ router.get('/today', async (req, res) => {
 
 router.post('/token', async (req, res) => {
   const { patient_id } = req.body;
-  const { start, end } = todayRange();
 
-  const { count, error: countError } = await req.supabase
-    .from('queue_tokens')
-    .select('*', { count: 'exact', head: true })
-    .eq('clinic_id', req.clinicId)
-    .gte('created_at', start)
-    .lte('created_at', end);
+  // Race-condition fix: next_daily_counter() is a single atomic
+  // Postgres statement (INSERT ... ON CONFLICT ... DO UPDATE ...
+  // RETURNING), so two tokens issued in the same instant can never
+  // collide on token_number — the old count-then-insert pattern could.
+  const { data: tokenNumber, error: counterError } = await req.supabase
+    .rpc('next_daily_counter', { p_clinic_id: req.clinicId, p_counter_type: 'queue_token' });
 
-  if (countError) return res.status(500).json({ error: countError.message });
+  if (counterError) return res.status(500).json({ error: counterError.message });
 
   const { data, error } = await req.supabase
     .from('queue_tokens')
     .insert({
       clinic_id: req.clinicId,
       patient_id: patient_id || null,
-      token_number: (count || 0) + 1,
+      token_number: tokenNumber,
       status: 'waiting',
     })
     .select()
@@ -70,6 +69,7 @@ router.patch('/token/:id', async (req, res) => {
     .maybeSingle();
 
   if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'not_found' });
   res.json(data);
 });
 
